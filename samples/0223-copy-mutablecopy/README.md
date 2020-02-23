@@ -11,6 +11,10 @@ description: 探究 copy mutableCopy 属性修饰符。
 
 copy  mutableCopy 貌似在不同场景下和预期的还不太一样，但是从 oc 语言角度去考虑，确实有时候为了避免不必要的内存开销，编译器层面确实会做下处理。
 
+> 核心思想：不可变对象进行 copy 都是浅 copy，即指针copy，即两者指向同一块内存，引用计数+1；mutableCopy 则一定是深 Copy；
+>
+> 可变对象进行 copy，mutableCopy 总是深copy，即重新分配一块内存。
+
 ## How to use?
 
 ```objective-c
@@ -18,7 +22,7 @@ copy  mutableCopy 貌似在不同场景下和预期的还不太一样，但是�
 @interface ViewController ()
 // 赋值给别人
 @property(nonatomic, strong)NSMutableArray *marr_s_1;
-@property(nonatomic, copy)NSMutableArray *marr_c_1;
+@property(nonatomic, copy)NSMutableArray *marr_c_1; // 这里有个坑 初始化的时候调用self.xx 相当于copy属性会生效
 @property(nonatomic, strong)NSArray *arr_s_1;
 @property(nonatomic, copy)NSArray *arr_c_1;
 
@@ -44,6 +48,7 @@ copy  mutableCopy 貌似在不同场景下和预期的还不太一样，但是�
     self.marr_s_1 = [NSMutableArray arrayWithArray:@[@1,@2]];
     [self test:self.marr_s_1]; // strong 对象我本身是可以变化的，所以 copy mutable 都要分配内存
     
+  	// 这里修正为 _marr_c_1 = [NSMutableArray arrayWithArray:@[@1,@2,@3]];
     self.marr_c_1 = [NSMutableArray arrayWithArray:@[@1,@2,@3]];
     [self test:self.marr_c_1]; // copy 属性修饰的数组 内部copy地址不变, mutable汇编
     
