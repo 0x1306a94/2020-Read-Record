@@ -256,6 +256,52 @@ extension:
 ### 7. 消息转发机制，消息转发机制和其他语言的消息机制优劣对比
 ### 8. 在方法调用的时候，`方法查询-> 动态解析-> 消息转发` 之前做了什么
 ### 9. `IMP`、`SEL`、`Method`的区别和使用场景
+
+三者的定义：
+
+```objective-c
+typedef struct method_t *Method;
+
+using MethodListIMP = IMP;
+
+struct method_t {
+    SEL name;
+    const char *types;
+    MethodListIMP imp;
+};
+```
+
+Method 同样是个对象，封装了方法名和实现，关于 [Type Encodings](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/ObjCRuntimeGuide/Articles/ocrtTypeEncodings.html#//apple_ref/doc/uid/TP40008048-CH100-SW1)。
+
+| Code               | Meaning                                                      |
+| :----------------- | :----------------------------------------------------------- |
+| `c`                | A `char`                                                     |
+| `i`                | An `int`                                                     |
+| `s`                | A `short`                                                    |
+| `l`                | A `long``l` is treated as a 32-bit quantity on 64-bit programs. |
+| `q`                | A `long long`                                                |
+| `C`                | An `unsigned char`                                           |
+| `I`                | An `unsigned int`                                            |
+| `S`                | An `unsigned short`                                          |
+| `L`                | An `unsigned long`                                           |
+| `Q`                | An `unsigned long long`                                      |
+| `f`                | A `float`                                                    |
+| `d`                | A `double`                                                   |
+| `B`                | A C++ `bool` or a C99 `_Bool`                                |
+| `v`                | A `void`                                                     |
+| `*`                | A character string (`char *`)                                |
+| `@`                | An object (whether statically typed or typed `id`)           |
+| `#`                | A class object (`Class`)                                     |
+| `:`                | A method selector (`SEL`)                                    |
+| [*array type*]     | An array                                                     |
+| {*name=type...*}   | A structure                                                  |
+| (*name*=*type...*) | A union                                                      |
+| `b`num             | A bit field of *num* bits                                    |
+| `^`type            | A pointer to *type*                                          |
+| `?`                | An unknown type (among other things, this code is used for function pointers) |
+
+ `-(void)hello:(NSString *)name` encode 下就是 `v@:@`。
+
 ### 10. `load`、`initialize`方法的区别什么？在继承关系中他们有什么区别
 
 load 方法调用时机，而且只调用当前类本身，不会调用superClass 的 `+load` 方法：
@@ -624,9 +670,3 @@ void callInitialize(Class cls)
 5. 二叉树相关操作
 6. 深搜广搜
 7. 基本的动态规划题、贪心算法、二分查找
-
-
-作者：Monkery
-链接：https://juejin.im/post/5e397ccaf265da570b3f1b02
-来源：掘金
-著作权归作者所有。商业转载请联系作者获得授权，非商业转载请注明出处。
