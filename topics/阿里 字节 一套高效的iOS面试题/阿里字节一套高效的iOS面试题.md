@@ -89,19 +89,171 @@ class_copyPropertyList(Class cls, unsigned int *outCount)
 }
 ```
 
-
+> Q1: `class_ro_t` 中的 `baseProperties` 呢？
+>
+> Q2: `class_rw_t` 中的 `properties` 包含了所有属性，那何时注入进去的呢？ 答案见 5.
 
 ### 4. `class_rw_t` 和 `class_ro_t` 的区别
 
 ![](./res/class_rw_t_class_ro_t.png)
 
+测试发现，`class_rw_t` 中的 `properties` 属性按顺序包含分类/扩展/基类中的属性。
 
+```objective-c
+struct class_ro_t {
+    uint32_t flags;
+    uint32_t instanceStart;
+    uint32_t instanceSize;
+#ifdef __LP64__
+    uint32_t reserved;
+#endif
+
+    const uint8_t * ivarLayout;
+    
+    const char * name;
+    method_list_t * baseMethodList;
+    protocol_list_t * baseProtocols;
+    const ivar_list_t * ivars;
+
+    const uint8_t * weakIvarLayout;
+    property_list_t *baseProperties;
+
+    method_list_t *baseMethods() const {
+        return baseMethodList;
+    }
+};
+
+struct class_rw_t {
+    // Be warned that Symbolication knows the layout of this structure.
+    uint32_t flags;
+    uint32_t version;
+
+    const class_ro_t *ro;
+
+    method_array_t methods;
+    property_array_t properties;
+    protocol_array_t protocols;
+
+    Class firstSubclass;
+    Class nextSiblingClass;
+
+    char *demangledName;
+
+#if SUPPORT_INDEXED_ISA
+    uint32_t index;
+#endif
+}
+```
 
 
 
 ### 5. `category`如何被加载的,两个category的`load`方法的加载顺序，两个category的同名方法的加载顺序
 
+`... -> realizeClass -> methodizeClass(用于Attach categories)-> attachCategories` 关键就是在 methodizeClass 方法实现中
+
+```objective-c
+static void methodizeClass(Class cls)
+{
+    runtimeLock.assertLocked();
+
+    bool isMeta = cls->isMetaClass();
+    auto rw = cls->data();
+    auto ro = rw->ro;
+  	
+  	// =======================================
+		// 省略.....
+  	// =======================================
+  
+    property_list_t *proplist = ro->baseProperties;
+    if (proplist) {
+        rw->properties.attachLists(&proplist, 1);
+    }
+
+  	// =======================================
+		// 省略.....
+  	// =======================================
+
+    // Attach categories.
+    category_list *cats = unattachedCategoriesForClass(cls, true /*realizing*/);
+    attachCategories(cls, cats, false /*don't flush caches*/);
+
+  	// =======================================
+		// 省略.....
+  	// =======================================
+    
+    if (cats) free(cats);
+
+}
+```
+
+上面代码能确定 baseProperties 在前，category 在后，但决定顺序的是 `rw->properties.attachLists` 这个方法：
+
+```objective-c
+property_list_t *proplist = ro->baseProperties;
+if (proplist) {
+  rw->properties.attachLists(&proplist, 1);
+}
+
+/// category 被附加进去
+void attachLists(List* const * addedLists, uint32_t addedCount) {
+        if (addedCount == 0) return;
+
+        if (hasArray()) {
+            // many lists -> many lists
+            uint32_t oldCount = array()->count;
+            uint32_t newCount = oldCount + addedCount;
+            setArray((array_t *)realloc(array(), array_t::byteSize(newCount)));
+            array()->count = newCount;
+            
+            // 将旧内容移动偏移量 addedCount 然后将 addedLists copy 到起始位置
+          	/*
+          		struct array_t {
+        				uint32_t count;
+        				List* lists[0];
+    					};
+          	*/
+            memmove(array()->lists + addedCount, array()->lists, 
+                    oldCount * sizeof(array()->lists[0]));
+            memcpy(array()->lists, addedLists, 
+                   addedCount * sizeof(array()->lists[0]));
+        }
+        else if (!list  &&  addedCount == 1) {
+            // 0 lists -> 1 list
+            list = addedLists[0];
+        } 
+        else {
+            // 1 list -> many lists
+            List* oldList = list;
+            uint32_t oldCount = oldList ? 1 : 0;
+            uint32_t newCount = oldCount + addedCount;
+            setArray((array_t *)malloc(array_t::byteSize(newCount)));
+            array()->count = newCount;
+            if (oldList) array()->lists[addedCount] = oldList;
+            memcpy(array()->lists, addedLists, 
+                   addedCount * sizeof(array()->lists[0]));
+        }
+    }
+```
+
+所以 category 的属性总是在前面的，baseClass的属性被往后偏移了。
+
+>  Q1：那么多个 category 的顺序呢？答案见6
+
 ### 6. `category` & `extension`区别，能给NSObject添加Extension吗，结果如何
+
+category:
+
+* 运行时添加分类属性/协议/方法
+* 分类添加的方法会“覆盖”原类方法，因为方法查找的话是从头至尾，一旦查找到了就停止了
+* 同名分类方法谁生效取决于编译顺序，image 读取的信息是倒叙的，所以编译越靠后的越先读入
+* 名字相同的分类会引起编译报错；
+
+extension:
+
+* 编译时决议
+* 只以声明的形式存在，多数情况下就存在于 .m 文件中；
+* 不能为系统类添加扩展
+
 ### 7. 消息转发机制，消息转发机制和其他语言的消息机制优劣对比
 ### 8. 在方法调用的时候，`方法查询-> 动态解析-> 消息转发` 之前做了什么
 ### 9. `IMP`、`SEL`、`Method`的区别和使用场景
