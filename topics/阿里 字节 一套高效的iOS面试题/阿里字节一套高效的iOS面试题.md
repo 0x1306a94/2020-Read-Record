@@ -4,7 +4,6 @@
 
 > * 调试好可运行的源码 [objc-runtime](https://github.com/colourful987/2020-Read-Record/tree/master/Annotated%20source%20code/objc4-750)，官网找 [objc4](https://opensource.apple.com/tarballs/objc4/)；
 >
-> 
 
 
 
@@ -258,6 +257,197 @@ extension:
 ### 8. 在方法调用的时候，`方法查询-> 动态解析-> 消息转发` 之前做了什么
 ### 9. `IMP`、`SEL`、`Method`的区别和使用场景
 ### 10. `load`、`initialize`方法的区别什么？在继承关系中他们有什么区别
+
+load 方法调用时机，而且只调用当前类本身，不会调用superClass 的 `+load` 方法：
+
+```objective-c
+void
+load_images(const char *path __unused, const struct mach_header *mh)
+{
+    // Return without taking locks if there are no +load methods here.
+    if (!hasLoadMethods((const headerType *)mh)) return;
+
+    recursive_mutex_locker_t lock(loadMethodLock);
+
+    // Discover load methods
+    {
+        mutex_locker_t lock2(runtimeLock);
+        prepare_load_methods((const headerType *)mh);
+    }
+
+    // Call +load methods (without runtimeLock - re-entrant)
+    call_load_methods();
+}
+
+void call_load_methods(void)
+{
+    static bool loading = NO;
+    bool more_categories;
+
+    loadMethodLock.assertLocked();
+
+    // Re-entrant calls do nothing; the outermost call will finish the job.
+    if (loading) return;
+    loading = YES;
+
+    void *pool = objc_autoreleasePoolPush();
+
+    do {
+        // 1. Repeatedly call class +loads until there aren't any more
+        while (loadable_classes_used > 0) {
+            call_class_loads();
+        }
+
+        // 2. Call category +loads ONCE
+        more_categories = call_category_loads();
+
+        // 3. Run more +loads if there are classes OR more untried categories
+    } while (loadable_classes_used > 0  ||  more_categories);
+
+    objc_autoreleasePoolPop(pool);
+
+    loading = NO;
+}
+```
+
+`+initialize` 实现
+
+```objective-c
+void _class_initialize(Class cls)
+{
+    assert(!cls->isMetaClass());
+
+    Class supercls;
+    bool reallyInitialize = NO;
+
+    // Make sure super is done initializing BEFORE beginning to initialize cls.
+    // See note about deadlock above.
+    supercls = cls->superclass;
+    if (supercls  &&  !supercls->isInitialized()) {
+        _class_initialize(supercls);
+    }
+    
+    // Try to atomically set CLS_INITIALIZING.
+    {
+        monitor_locker_t lock(classInitLock);
+        if (!cls->isInitialized() && !cls->isInitializing()) {
+            cls->setInitializing();
+            reallyInitialize = YES;
+        }
+    }
+    
+    if (reallyInitialize) {
+        // We successfully set the CLS_INITIALIZING bit. Initialize the class.
+        
+        // Record that we're initializing this class so we can message it.
+        _setThisThreadIsInitializingClass(cls);
+
+        if (MultithreadedForkChild) {
+            // LOL JK we don't really call +initialize methods after fork().
+            performForkChildInitialize(cls, supercls);
+            return;
+        }
+        
+        // Send the +initialize message.
+        // Note that +initialize is sent to the superclass (again) if 
+        // this class doesn't implement +initialize. 2157218
+        if (PrintInitializing) {
+            _objc_inform("INITIALIZE: thread %p: calling +[%s initialize]",
+                         pthread_self(), cls->nameForLogging());
+        }
+
+        // Exceptions: A +initialize call that throws an exception 
+        // is deemed to be a complete and successful +initialize.
+        //
+        // Only __OBJC2__ adds these handlers. !__OBJC2__ has a
+        // bootstrapping problem of this versus CF's call to
+        // objc_exception_set_functions().
+#if __OBJC2__
+        @try
+#endif
+        {
+            callInitialize(cls);
+
+            if (PrintInitializing) {
+                _objc_inform("INITIALIZE: thread %p: finished +[%s initialize]",
+                             pthread_self(), cls->nameForLogging());
+            }
+        }
+#if __OBJC2__
+        @catch (...) {
+            if (PrintInitializing) {
+                _objc_inform("INITIALIZE: thread %p: +[%s initialize] "
+                             "threw an exception",
+                             pthread_self(), cls->nameForLogging());
+            }
+            @throw;
+        }
+        @finally
+#endif
+        {
+            // Done initializing.
+            lockAndFinishInitializing(cls, supercls);
+        }
+        return;
+    }
+    
+    else if (cls->isInitializing()) {
+        // We couldn't set INITIALIZING because INITIALIZING was already set.
+        // If this thread set it earlier, continue normally.
+        // If some other thread set it, block until initialize is done.
+        // It's ok if INITIALIZING changes to INITIALIZED while we're here, 
+        //   because we safely check for INITIALIZED inside the lock 
+        //   before blocking.
+        if (_thisThreadIsInitializingClass(cls)) {
+            return;
+        } else if (!MultithreadedForkChild) {
+            waitForInitializeToComplete(cls);
+            return;
+        } else {
+            // We're on the child side of fork(), facing a class that
+            // was initializing by some other thread when fork() was called.
+            _setThisThreadIsInitializingClass(cls);
+            performForkChildInitialize(cls, supercls);
+        }
+    }
+    
+    else if (cls->isInitialized()) {
+        // Set CLS_INITIALIZING failed because someone else already 
+        //   initialized the class. Continue normally.
+        // NOTE this check must come AFTER the ISINITIALIZING case.
+        // Otherwise: Another thread is initializing this class. ISINITIALIZED 
+        //   is false. Skip this clause. Then the other thread finishes 
+        //   initialization and sets INITIALIZING=no and INITIALIZED=yes. 
+        //   Skip the ISINITIALIZING clause. Die horribly.
+        return;
+    }
+    
+    else {
+        // We shouldn't be here. 
+        _objc_fatal("thread-safe class init in objc runtime is buggy!");
+    }
+}
+
+void callInitialize(Class cls)
+{
+    ((void(*)(Class, SEL))objc_msgSend)(cls, SEL_initialize);
+    asm("");
+}
+```
+
+注意看上面的调用了 ` callInitialize(cls)` 然后又调用了 `lockAndFinishInitializing(cls, supercls)`。 
+
+> 摘自[iOS App冷启动治理](https://juejin.im/post/5c0a17d6e51d4570cf60d102?utm_source=gold_browser_extension) 一文中对 Dyld 在各阶段所做的事情：
+
+| 阶段         | 工作                                                         |
+| ------------ | ------------------------------------------------------------ |
+| 加载动态库   | Dyld从主执行文件的header获取到需要加载的所依赖动态库列表，然后它需要找到每个 dylib，而应用所依赖的 dylib 文件可能会再依赖其他 dylib，所以所需要加载的是动态库列表一个递归依赖的集合 |
+| Rebase和Bind | - Rebase在Image内部调整指针的指向。在过去，会把动态库加载到指定地址，所有指针和数据对于代码都是对的，而现在地址空间布局是随机化，所以需要在原来的地址根据随机的偏移量做一下修正 - Bind是把指针正确地指向Image外部的内容。这些指向外部的指针被符号(symbol)名称绑定，dyld需要去符号表里查找，找到symbol对应的实现 |
+| Objc setup   | - 注册Objc类 (class registration) - 把category的定义插入方法列表 (category registration) - 保证每一个selector唯一 (selector uniquing) |
+| Initializers | - Objc的+load()函数 - C++的构造函数属性函数 - 非基本类型的C++静态全局变量的创建(通常是类或结构体) |
+
+最后 dyld 会调用 main() 函数，main() 会调用 UIApplicationMain()，before main()的过程也就此完成。
+
 ### 11. 说说消息转发机制的优劣
 
 ## 内存管理
