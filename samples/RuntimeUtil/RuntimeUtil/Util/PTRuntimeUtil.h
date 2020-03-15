@@ -11,7 +11,7 @@
 NS_ASSUME_NONNULL_BEGIN
 
 @interface PTRuntimeUtil : NSObject
-
+- (void)logClassInfo:(Class)cls;
 @end
 
 NS_ASSUME_NONNULL_END

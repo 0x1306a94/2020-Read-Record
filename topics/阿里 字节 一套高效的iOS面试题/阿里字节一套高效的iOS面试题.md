@@ -20,10 +20,87 @@
 
 ### 3. `class_copyIvarList` & `class_copyPropertyList`区别
 
+`class_copyIvarList` 获取类对象中的所有实例变量信息，从 `class_ro_t` 中获取：
+
+```objective-c
+Ivar *
+class_copyIvarList(Class cls, unsigned int *outCount)
+{
+    const ivar_list_t *ivars;
+    Ivar *result = nil;
+    unsigned int count = 0;
+
+    if (!cls) {
+        if (outCount) *outCount = 0;
+        return nil;
+    }
+
+    mutex_locker_t lock(runtimeLock);
+
+    assert(cls->isRealized());
+    
+    if ((ivars = cls->data()->ro->ivars)  &&  ivars->count) {
+        result = (Ivar *)malloc((ivars->count+1) * sizeof(Ivar));
+        
+        for (auto& ivar : *ivars) {
+            if (!ivar.offset) continue;  // anonymous bitfield
+            result[count++] = &ivar;
+        }
+        result[count] = nil;
+    }
+    
+    if (outCount) *outCount = count;
+    return result;
+}
+```
+
+`class_copyPropertyList` 获取类对象中的属性信息， `class_rw_t` 的 `properties`，先后输出了 category / extension/ baseClass 的属性，而且仅输出当前的类的属性信息，而不会向上去找 superClass 中定义的属性。
+
+```objective-c
+objc_property_t *
+class_copyPropertyList(Class cls, unsigned int *outCount)
+{
+    if (!cls) {
+        if (outCount) *outCount = 0;
+        return nil;
+    }
+
+    mutex_locker_t lock(runtimeLock);
+
+    checkIsKnownClass(cls);
+    assert(cls->isRealized());
+    
+    auto rw = cls->data();
+
+    property_t **result = nil;
+    unsigned int count = rw->properties.count();
+    if (count > 0) {
+        result = (property_t **)malloc((count + 1) * sizeof(property_t *));
+
+        count = 0;
+        for (auto& prop : rw->properties) {
+            result[count++] = &prop;
+        }
+        result[count] = nil;
+    }
+
+    if (outCount) *outCount = count;
+    return (objc_property_t *)result;
+}
+```
+
 
 
 ### 4. `class_rw_t` 和 `class_ro_t` 的区别
+
+![](./res/class_rw_t_class_ro_t.png)
+
+
+
+
+
 ### 5. `category`如何被加载的,两个category的`load`方法的加载顺序，两个category的同名方法的加载顺序
+
 ### 6. `category` & `extension`区别，能给NSObject添加Extension吗，结果如何
 ### 7. 消息转发机制，消息转发机制和其他语言的消息机制优劣对比
 ### 8. 在方法调用的时候，`方法查询-> 动态解析-> 消息转发` 之前做了什么

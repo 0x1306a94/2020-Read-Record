@@ -101,9 +101,9 @@
 - (void)logClassInfo:(Class)cls {
     NSLog(@"LOG:(%@) INFO",NSStringFromClass(cls));
     [self printProperties:cls];
-    [self printIvars:cls];
-    [self printMethods:cls];
-    [self printProtocols:cls];
+//    [self printIvars:cls];
+//    [self printMethods:cls];
+//    [self printProtocols:cls];
     NSLog(@"=========================\n");
 }
 

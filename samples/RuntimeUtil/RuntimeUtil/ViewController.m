@@ -7,6 +7,8 @@
 //
 
 #import "ViewController.h"
+#import "Person.h"
+#import "PTRuntimeUtil.h"
 
 @interface ViewController ()
 
@@ -14,9 +16,14 @@
 
 @implementation ViewController
 
+- (void)test_class_copyIvarList_and_class_copyPropertyList {
+    [[PTRuntimeUtil new] logClassInfo:Person.class];
+    [[PTRuntimeUtil new] logClassInfo:Teacher.class];
+}
+
 - (void)viewDidLoad {
     [super viewDidLoad];
-    // Do any additional setup after loading the view.
+    
 }
 
 

@@ -15,6 +15,8 @@
 		4F2B94D0241E7C210009F566 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 4F2B94CE241E7C210009F566 /* LaunchScreen.storyboard */; };
 		4F2B94D3241E7C210009F566 /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = 4F2B94D2241E7C210009F566 /* main.m */; };
 		4F2B94DC241E7C3E0009F566 /* PTRuntimeUtil.m in Sources */ = {isa = PBXBuildFile; fileRef = 4F2B94DB241E7C3E0009F566 /* PTRuntimeUtil.m */; };
+		4F2B94E0241E82210009F566 /* Person.m in Sources */ = {isa = PBXBuildFile; fileRef = 4F2B94DF241E82210009F566 /* Person.m */; };
+		4F2B94E3241E83410009F566 /* Person+Category.m in Sources */ = {isa = PBXBuildFile; fileRef = 4F2B94E2241E83410009F566 /* Person+Category.m */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -32,6 +34,10 @@
 		4F2B94D2241E7C210009F566 /* main.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = main.m; sourceTree = "<group>"; };
 		4F2B94DA241E7C3E0009F566 /* PTRuntimeUtil.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PTRuntimeUtil.h; sourceTree = "<group>"; };
 		4F2B94DB241E7C3E0009F566 /* PTRuntimeUtil.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = PTRuntimeUtil.m; sourceTree = "<group>"; };
+		4F2B94DE241E82210009F566 /* Person.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = Person.h; sourceTree = "<group>"; };
+		4F2B94DF241E82210009F566 /* Person.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Person.m; sourceTree = "<group>"; };
+		4F2B94E1241E83410009F566 /* Person+Category.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Person+Category.h"; sourceTree = "<group>"; };
+		4F2B94E2241E83410009F566 /* Person+Category.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "Person+Category.m"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -64,6 +70,7 @@
 		4F2B94BF241E7C1F0009F566 /* RuntimeUtil */ = {
 			isa = PBXGroup;
 			children = (
+				4F2B94DD241E820E0009F566 /* models */,
 				4F2B94D9241E7C260009F566 /* Util */,
 				4F2B94C0241E7C1F0009F566 /* AppDelegate.h */,
 				4F2B94C1241E7C1F0009F566 /* AppDelegate.m */,
@@ -87,6 +94,17 @@
 				4F2B94DB241E7C3E0009F566 /* PTRuntimeUtil.m */,
 			);
 			path = Util;
+			sourceTree = "<group>";
+		};
+		4F2B94DD241E820E0009F566 /* models */ = {
+			isa = PBXGroup;
+			children = (
+				4F2B94DE241E82210009F566 /* Person.h */,
+				4F2B94DF241E82210009F566 /* Person.m */,
+				4F2B94E1241E83410009F566 /* Person+Category.h */,
+				4F2B94E2241E83410009F566 /* Person+Category.m */,
+			);
+			path = models;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -159,8 +177,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				4F2B94E0241E82210009F566 /* Person.m in Sources */,
 				4F2B94C8241E7C1F0009F566 /* ViewController.m in Sources */,
 				4F2B94C2241E7C1F0009F566 /* AppDelegate.m in Sources */,
+				4F2B94E3241E83410009F566 /* Person+Category.m in Sources */,
 				4F2B94D3241E7C210009F566 /* main.m in Sources */,
 				4F2B94C5241E7C1F0009F566 /* SceneDelegate.m in Sources */,
 				4F2B94DC241E7C3E0009F566 /* PTRuntimeUtil.m in Sources */,
