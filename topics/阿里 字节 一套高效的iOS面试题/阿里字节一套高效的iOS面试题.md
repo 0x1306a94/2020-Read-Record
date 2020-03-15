@@ -1,0 +1,213 @@
+[TOC]
+
+# runtime相关问题
+
+> * 调试好可运行的源码 [objc-runtime](https://github.com/colourful987/2020-Read-Record/tree/master/Annotated%20source%20code/objc4-750)，官网找 [objc4](https://opensource.apple.com/tarballs/objc4/)；
+>
+> 
+
+
+
+## 结构模型
+
+### 1. 介绍下runtime的内存模型（isa、对象、类、metaclass、结构体的存储信息等）
+
+
+
+### 2. 为什么要设计metaclass
+
+
+
+### 3. `class_copyIvarList` & `class_copyPropertyList`区别
+
+
+
+### 4. `class_rw_t` 和 `class_ro_t` 的区别
+### 5. `category`如何被加载的,两个category的`load`方法的加载顺序，两个category的同名方法的加载顺序
+### 6. `category` & `extension`区别，能给NSObject添加Extension吗，结果如何
+### 7. 消息转发机制，消息转发机制和其他语言的消息机制优劣对比
+### 8. 在方法调用的时候，`方法查询-> 动态解析-> 消息转发` 之前做了什么
+### 9. `IMP`、`SEL`、`Method`的区别和使用场景
+### 10. `load`、`initialize`方法的区别什么？在继承关系中他们有什么区别
+### 11. 说说消息转发机制的优劣
+
+## 内存管理
+
+1. `weak`的实现原理？`SideTable`的结构是什么样的
+2. 关联对象的应用？系统如何实现关联对象的
+3. 关联对象的如何进行内存管理的？关联对象如何实现weak属性
+4. `Autoreleasepool`的原理？所使用的的数据结构是什么
+5. `ARC`的实现原理？`ARC`下对`retain & release`做了哪些优化
+6. `ARC`下哪些情况会造成内存泄漏
+
+## 其他
+
+1. `Method Swizzle`注意事项
+2. 属性修饰符`atomic`的内部实现是怎么样的?能保证线程安全吗
+3. iOS 中内省的几个方法有哪些？内部实现原理是什么
+4. `class、objc_getClass、object_getclass` 方法有什么区别?
+
+# NSNotification相关
+
+认真研读、你可以在这里找到答案[轻松过面：一文全解iOS通知机制(经典收藏)](https://juejin.im/post/5e5fc16df265da575155723b)
+
+1. 实现原理（结构设计、通知如何存储的、`name&observer&SEL`之间的关系等）
+2. 通知的发送时同步的，还是异步的
+3. `NSNotificationCenter`接受消息和发送消息是在一个线程里吗？如何异步发送消息
+4. `NSNotificationQueue`是异步还是同步发送？在哪个线程响应
+5. `NSNotificationQueue`和`runloop`的关系
+6. 如何保证通知接收的线程在主线程
+7. 页面销毁时不移除通知会崩溃吗
+8. 多次添加同一个通知会是什么结果？多次移除通知呢
+9. 下面的方式能接收到通知吗？为什么
+
+```
+// 发送通知
+[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleNotification:) name:@"TestNotification" object:@1];
+// 接收通知
+[NSNotificationCenter.defaultCenter postNotificationName:@"TestNotification" object:nil];
+复制代码
+```
+
+# Runloop & KVO
+
+## runloop
+
+`runloop`对于一个标准的iOS开发来说都不陌生，应该说熟悉`runloop`是标配，下面就随便列几个典型问题吧
+
+1. app如何接收到触摸事件的
+2. 为什么只有主线程的`runloop`是开启的
+3. 为什么只在主线程刷新UI
+4. `PerformSelector`和`runloop`的关系
+5. 如何使线程保活
+
+## KVO
+
+同`runloop`一样，这也是标配的知识点了，同样列出几个典型问题
+
+1. 实现原理
+2. 如何手动关闭kvo
+3. 通过KVC修改属性会触发KVO么
+4. 哪些情况下使用kvo会崩溃，怎么防护崩溃
+5. kvo的优缺点
+
+# Block
+
+1. `block`的内部实现，结构体是什么样的
+2. block是类吗，有哪些类型
+3. 一个`int`变量被 `__block` 修饰与否的区别？block的变量截获
+4. `block`在修改`NSMutableArray`，需不需要添加`__block`
+5. 怎么进行内存管理的
+6. `block`可以用`strong`修饰吗
+7. 解决循环引用时为什么要用`__strong、__weak`修饰
+8. `block`发生`copy`时机
+9. `Block`访问对象类型的`auto变量`时，在`ARC和MRC`下有什么区别
+
+# 多线程
+
+主要以GCD为主
+
+1. `iOS`开发中有多少类型的线程？分别对比
+2. `GCD`有哪些队列，默认提供哪些队列
+3. `GCD`有哪些方法api
+4. `GCD`主线程 & 主队列的关系
+5. 如何实现同步，有多少方式就说多少
+6. `dispatch_once`实现原理
+7. 什么情况下会死锁
+8. 有哪些类型的线程锁，分别介绍下作用和使用场景
+9. `NSOperationQueue`中的`maxConcurrentOperationCount`默认值
+10. `NSTimer、CADisplayLink、dispatch_source_t` 的优劣
+
+# 视图&图像相关
+
+1. `AutoLayout`的原理，性能如何
+2. `UIView & CALayer`的区别
+3. 事件响应链
+4. `drawrect & layoutsubviews`调用时机
+5. UI的刷新原理
+6. 隐式动画 & 显示动画区别
+7. 什么是离屏渲染
+8. imageName & imageWithContentsOfFile区别
+9. 多个相同的图片，会重复加载吗
+10. 图片是什么时候解码的，如何优化
+11. 图片渲染怎么优化
+12. 如果GPU的刷新率超过了iOS屏幕60Hz刷新率是什么现象，怎么解决
+
+# 性能优化
+
+1. 如何做启动优化，如何监控
+2. 如何做卡顿优化，如何监控
+3. 如何做耗电优化，如何监控
+4. 如何做网络优化，如何监控
+
+# 开发证书
+
+1. 苹果使用证书的目的是什么
+2. AppStore安装app时的认证流程
+3. 开发者怎么在debug模式下把app安装到设备呢
+
+# 架构设计
+
+## 典型源码的学习
+
+只是列出一些iOS比较核心的开源库，这些库包含了很多高质量的思想，源码学习的时候一定要关注每个框架解决的核心问题是什么，还有它们的优缺点，这样才能算真正理解和吸收
+
+1. AFN
+2. SDWebImage
+3. JSPatch、Aspects(虽然一个不可用、另一个不维护，但是这两个库都很精炼巧妙，很适合学习)
+4. Weex/RN, 笔者认为这种前端和客户端紧密联系的库是必须要知道其原理的
+5. CTMediator、其他router库，这些都是常见的路由库，开发中基本上都会用到
+6. 请`圈友`们在评论下面补充吧
+
+## 架构设计
+
+1. 手动埋点、自动化埋点、可视化埋点
+2. `MVC、MVP、MVVM`设计模式
+3. 常见的设计模式
+4. 单例的弊端
+5. 常见的路由方案，以及优缺点对比
+6. 如果保证项目的稳定性
+7. 设计一个图片缓存框架(LRU)
+8. 如何设计一个`git diff`
+9. 设计一个线程池？画出你的架构图
+10. 你的app架构是什么，有什么优缺点、为什么这么做、怎么改进
+
+# 其他问题
+
+1. `PerformSelector & NSInvocation`优劣对比
+2. `oc`怎么实现多继承？怎么面向切面（可以参考[Aspects深度解析-iOS面向切面编程](https://juejin.im/post/5e13c4366fb9a047f42e6406)）
+3. 哪些`bug`会导致崩溃，如何防护崩溃
+4. 怎么监控崩溃
+5. `app`的启动过程（考察LLVM编译过程、静态链接、动态链接、runtime初始化）
+6. 沙盒目录的每个文件夹划分的作用
+7. 简述下`match-o`文件结构
+
+# 系统基础知识
+
+1. 进程和线程的区别
+2. `HTTPS`的握手过程
+3. 什么是`中间人攻击`？怎么预防
+4. `TCP`的握手过程？为什么进行三次握手，四次挥手
+5. `堆和栈`区的区别？谁的占用内存空间大
+6. 加密算法：`对称加密算法和非对称加密算法`区别
+7. 常见的`对称加密和非对称加密`算法有哪些
+8. `MD5、Sha1、Sha256`区别
+9. `charles`抓包过程？不使用`charles`，`4G`网络如何抓包
+
+# 数据结构与算法
+
+对于移动开发者来说，一般不会遇到非常难的算法，大多以数据结构为主，笔者列出一些必会的算法，当然有时间了可以去[LeetCode](https://leetcode.com/)上刷刷题
+
+1. 八大排序算法
+2. 栈&队列
+3. 字符串处理
+4. 链表
+5. 二叉树相关操作
+6. 深搜广搜
+7. 基本的动态规划题、贪心算法、二分查找
+
+
+作者：Monkery
+链接：https://juejin.im/post/5e397ccaf265da570b3f1b02
+来源：掘金
+著作权归作者所有。商业转载请联系作者获得授权，非商业转载请注明出处。
