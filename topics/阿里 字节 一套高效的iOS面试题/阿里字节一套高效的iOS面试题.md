@@ -238,6 +238,69 @@ void attachLists(List* const * addedLists, uint32_t addedCount) {
 
 >  Q1：那么多个 category 的顺序呢？答案见6
 
+2020/03/18 补充下应用程序 image 镜像加载到内存中时， Category 解析的过程，注意下面的 `while(i--)` 这里倒叙将 category 中的协议 方法 属性添加到了 `rw = cls->data()` 中的 `methods/properties/protocols` 中。
+
+```objective-c
+static void 
+attachCategories(Class cls, category_list *cats, bool flush_caches)
+{
+    if (!cats) return;
+    if (PrintReplacedMethods) printReplacements(cls, cats);
+
+    bool isMeta = cls->isMetaClass();
+
+    // fixme rearrange to remove these intermediate allocations
+    method_list_t **mlists = (method_list_t **)
+        malloc(cats->count * sizeof(*mlists));
+    property_list_t **proplists = (property_list_t **)
+        malloc(cats->count * sizeof(*proplists));
+    protocol_list_t **protolists = (protocol_list_t **)
+        malloc(cats->count * sizeof(*protolists));
+
+    // Count backwards through cats to get newest categories first
+    int mcount = 0;
+    int propcount = 0;
+    int protocount = 0;
+    int i = cats->count;
+    bool fromBundle = NO;
+    while (i--) {
+        auto& entry = cats->list[i];
+
+        method_list_t *mlist = entry.cat->methodsForMeta(isMeta);
+        if (mlist) {
+            mlists[mcount++] = mlist;
+            fromBundle |= entry.hi->isBundle();
+        }
+
+        property_list_t *proplist = 
+            entry.cat->propertiesForMeta(isMeta, entry.hi);
+        if (proplist) {
+            proplists[propcount++] = proplist;
+        }
+
+        protocol_list_t *protolist = entry.cat->protocols;
+        if (protolist) {
+            protolists[protocount++] = protolist;
+        }
+    }
+    auto rw = cls->data();
+		
+  	// 注意下面的代码，上面采用倒叙遍历方式，所以后编译的 category 会先add到数组的前部
+    prepareMethodLists(cls, mlists, mcount, NO, fromBundle);
+    rw->methods.attachLists(mlists, mcount);
+    free(mlists);
+    if (flush_caches  &&  mcount > 0) flushCaches(cls);
+
+    rw->properties.attachLists(proplists, propcount);
+    free(proplists);
+
+    rw->protocols.attachLists(protolists, protocount);
+    free(protolists);
+}
+```
+
+
+
 ### 6. `category` & `extension`区别，能给NSObject添加Extension吗，结果如何
 
 category:

@@ -23,7 +23,9 @@
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    
+    NSArray *array = [NSArray array];
+    NSMutableArray *marray = (NSMutableArray *)array;
+    [marray addObject:@(1)];
 }
 
 
