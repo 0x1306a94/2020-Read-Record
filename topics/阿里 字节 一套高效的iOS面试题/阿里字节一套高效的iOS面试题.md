@@ -561,12 +561,164 @@ void callInitialize(Class cls)
 
 ## 内存管理
 
-1. `weak`的实现原理？`SideTable`的结构是什么样的
-2. 关联对象的应用？系统如何实现关联对象的
-3. 关联对象的如何进行内存管理的？关联对象如何实现weak属性
-4. `Autoreleasepool`的原理？所使用的的数据结构是什么
-5. `ARC`的实现原理？`ARC`下对`retain & release`做了哪些优化
-6. `ARC`下哪些情况会造成内存泄漏
+### 1.`weak`的实现原理？`SideTable`的结构是什么样的
+
+> 解答参考自瓜神的[ weak 弱引用的实现方式](https://www.desgard.com/iOS-Source-Probe/Objective-C/Runtime/weak%20弱引用的实现方式.html) 。
+
+```objective-c
+NSObject *p = [[NSObject alloc] init];
+__weak NSObject *p1 = p;
+// ====> 底层是runtime的 objc_initWeak
+// xcrun -sdk iphoneos clang -arch arm64 -rewrite-objc -fobjc-arc -fobjc-runtime=ios-13.2 main.m 得不到下面的代码，还是说命令参数不对。
+NSObject objc_initWeak(&p, 对象指针);
+```
+
+通过 runtime 源码可以看到 `objc_initWeak` 实现：
+
+```objective-c
+id
+objc_initWeakOrNil(id *location, id newObj)
+{
+    if (!newObj) {
+        *location = nil;
+        return nil;
+    }
+
+    return storeWeak<DontHaveOld, DoHaveNew, DontCrashIfDeallocating>
+        (location, (objc_object*)newObj);
+}
+```
+SideTable 结构体在 runtime 底层用于引用计数和弱引用关联表，其数据结构是这样：
+
+```c++
+struct SideTable {
+    // 自旋锁
+    spinlock_t slock;
+    // 引用计数
+    RefcountMap refcnts;
+    // weak 引用
+    weak_table_t weak_table;
+}
+
+struct weak_table_t {
+    // 保存了所有指向指定对象的 weak 指针
+    weak_entry_t *weak_entries;
+    // 存储空间
+    size_t    num_entries;
+    // 参与判断引用计数辅助量
+    uintptr_t mask;
+    // hash key 最大偏移值
+    uintptr_t max_hash_displacement;
+};
+```
+
+根据对象的地址在缓存中取出对应的 `SideTable` 实例：
+
+```c++
+static SideTable *tableForPointer(const void *p)
+```
+
+或者如上面源码中 ` &SideTables()[newObj]` 方式取表，**这里的 newObj 是实例对象用其指针作为 key 拿到 从全局的 SideTables 中拿到实例自身对应的那张 SideTable**。
+
+```
+static StripedMap<SideTable>& SideTables() {
+    return *reinterpret_cast<StripedMap<SideTable>*>(SideTableBuf);
+}
+```
+
+取出实例方法的实现中，使用了 C++ 标准转换运算符 **reinterpret_cast** ，其表达方式为：
+
+```c++
+reinterpret_cast <new_type> (expression)
+```
+
+每一个  weak 关键字修饰的对象都是用 `weak_entry_t` 结构体来表示，所以在实例中声明定义的 weak 对象都会被封装成 `weak_entry_t` 加入到该 SideTable 中 `weak_table` 中
+
+```c++
+typedef objc_object ** weak_referrer_t;
+
+struct weak_entry_t {
+    DisguisedPtr<objc_object> referent;
+    union {
+        struct {
+            weak_referrer_t *referrers;
+            uintptr_t        out_of_line : 1;
+            uintptr_t        num_refs : PTR_MINUS_1;
+            uintptr_t        mask;
+            uintptr_t        max_hash_displacement;
+        };
+        struct {
+            // out_of_line=0 is LSB of one of these (don't care which)
+            weak_referrer_t  inline_referrers[WEAK_INLINE_COUNT];
+        };
+ }
+```
+
+旧对象解除注册操作 `weak_unregister_no_lock` 和 新对象添加注册操作 `weak_register_no_lock` ，具体实现可前往 runtime 源码中查看或查看瓜的博文。
+
+![](./res/weak_store_pic.png)
+
+`weak` 关键字修饰的对象有两种情况：栈上和堆上。上图主要解释 `id referent_id 和 id *referrer_id`，
+
+* 如果是栈上， `referrer` 值为 0x77889900，`referent` 值为 0x11223344
+* 如果是堆上 ， `referrer`  值为 0x1100000+ offset（也就是 weak a 所在堆上的地址），`referent` 值为 0x11223344。
+
+> 如此现在类 A 的实例对象有两个 weak 变量指向它，一个在堆上，一个在栈上。
+
+```c++
+void
+weak_unregister_no_lock(weak_table_t *weak_table, id referent_id, 
+                        id *referrer_id)
+{
+    objc_object *referent = (objc_object *)referent_id;   //  0x11223344
+    objc_object **referrer = (objc_object **)referrer_id; //  0x77889900
+
+    weak_entry_t *entry;
+
+    if (!referent) return;
+		
+  	// 从 weak_table 中找到 referent 也就是上面类A的实例对象
+    if ((entry = weak_entry_for_referent(weak_table, referent))) {
+      	// 在 entry 结构体中的 referrers 数组中找到指针 referrer 所在位置
+      	// 将原本存储 referrer 值的位置置为 nil，相当于做了一个解绑操作
+      	// 因为 referrer 要和其他对象建立关系了
+        remove_referrer(entry, referrer);
+        bool empty = true;
+        if (entry->out_of_line()  &&  entry->num_refs != 0) {
+            empty = false;
+        }
+        else {
+            for (size_t i = 0; i < WEAK_INLINE_COUNT; i++) {
+                if (entry->inline_referrers[i]) {
+                    empty = false; 
+                    break;
+                }
+            }
+        }
+
+        if (empty) {
+            weak_entry_remove(weak_table, entry);
+        }
+    }
+
+    // Do not set *referrer = nil. objc_storeWeak() requires that the 
+    // value not change.
+}
+```
+
+> weak 关键字修饰的属性或者变量为什么在对应类实例dealloc后会置为nil，那是因为在类实例释放的时候，dealloc 会从全局的引用计数和weak计数表sideTable**s**中，通过实例地址去找到属于自己的那张表，表中的 weak_table->weak_entries 存储了所有 entry 对象——其实就是所有指向这个实例对象的变量，`weak_entry_t` 中的 `referrers` 数组存储的就是变量或属性的内存地址，逐一置为nil即可。
+
+
+
+### 2. 关联对象的应用？系统如何实现关联对象的
+
+### 3. 关联对象的如何进行内存管理的？关联对象如何实现weak属性
+
+### 4. `Autoreleasepool`的原理？所使用的的数据结构是什么
+
+### 5. `ARC`的实现原理？`ARC`下对`retain & release`做了哪些优化
+
+### 6. `ARC`下哪些情况会造成内存泄漏
 
 ## 其他
 
