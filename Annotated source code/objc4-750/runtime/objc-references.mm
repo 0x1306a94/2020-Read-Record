@@ -224,17 +224,38 @@ id _object_get_associative_reference(id object, void *key) {
     uintptr_t policy = OBJC_ASSOCIATION_ASSIGN;
     {
         AssociationsManager manager;
+        // manager.associations() 返回的是一个 `AssociationsHashMap` 对象(*_map)
+        // 所以这里 `&associations` 中用了 `&`
         AssociationsHashMap &associations(manager.associations());
+        // intptr_t 是为了兼容平台，在64位的机器上，intptr_t和uintptr_t分别是long int、unsigned long int的别名；在32位的机器上，intptr_t和uintptr_t分别是int、unsigned int的别名
+        // DISGUISE 内部对指针做了 ~ 取反操作，“伪装”？
         disguised_ptr_t disguised_object = DISGUISE(object);
+        /*
+         AssociationsHashMap 继承自 unordered_map，存储 key-value 的组合
+         iterator find ( const key_type& key )，如果 key 存在，则返回key对象的迭代器，
+         如果key不存在，则find返回 unordered_map::end；因此可以通过 `map.find(key) == map.end()`
+         判断 key 是否存在于当前 map 中。
+         */
         AssociationsHashMap::iterator i = associations.find(disguised_object);
         if (i != associations.end()) {
+            /*
+                unordered_map 的键值分别是迭代器的first和second属性。
+                所以说上面先通过 object 对象(实例对象or类对象) 找到其所有关联对象
+                i->second 取到又是一个 ObjectAssociationMap
+                此刻再通过我们自己设定的 key 来查找对应的关联属性值，不过使用
+                `ObjcAssociation` 封装的
+             */
             ObjectAssociationMap *refs = i->second;
             ObjectAssociationMap::iterator j = refs->find(key);
             if (j != refs->end()) {
                 ObjcAssociation &entry = j->second;
                 value = entry.value();
                 policy = entry.policy();
+                // 如果策略是 getter retain ，注意这里留个坑
+                // 平常 OBJC_ASSOCIATION_RETAIN = 01401
+                // OBJC_ASSOCIATION_GETTER_RETAIN = (1 << 8)
                 if (policy & OBJC_ASSOCIATION_GETTER_RETAIN) {
+                    // TODO: 有学问
                     objc_retain(value);
                 }
             }
@@ -271,18 +292,39 @@ struct ReleaseValue {
 void _object_set_associative_reference(id object, void *key, id value, uintptr_t policy) {
     // retain the new value (if any) outside the lock.
     ObjcAssociation old_association(0, nil);
+    // 如果value对象存在，则进行retain or copy 操作
     id new_value = value ? acquireValue(value, policy) : nil;
     {
         AssociationsManager manager;
+        // manager.associations() 返回的是一个 `AssociationsHashMap` 对象(*_map)
+        // 所以这里 `&associations` 中用了 `&`
         AssociationsHashMap &associations(manager.associations());
+        // intptr_t 是为了兼容平台，在64位的机器上，intptr_t和uintptr_t分别是long int、unsigned long int的别名；在32位的机器上，intptr_t和uintptr_t分别是int、unsigned int的别名
+        // DISGUISE 内部对指针做了 ~ 取反操作，“伪装”
         disguised_ptr_t disguised_object = DISGUISE(object);
         if (new_value) {
             // break any existing association.
+            /*
+             AssociationsHashMap 继承自 unordered_map，存储 key-value 的组合
+             iterator find ( const key_type& key )，如果 key 存在，则返回key对象的迭代器，
+             如果key不存在，则find返回 unordered_map::end；因此可以通过 `map.find(key) == map.end()`
+             判断 key 是否存在于当前 map 中。
+             */
             AssociationsHashMap::iterator i = associations.find(disguised_object);
+            // 这里和get操作不同，set操作时如果查询到对象没有关联对象，那么这一次设值是第一次，
+            // 所以会创建一个新的 ObjectAssociationMap 用来存储实例对象的所有关联属性
             if (i != associations.end()) {
                 // secondary table exists
+                /*
+                    unordered_map 的键值分别是迭代器的first和second属性。
+                    所以说上面先通过 object 对象(实例对象or类对象) 找到其所有关联对象
+                    i->second 取到又是一个 ObjectAssociationMap
+                    此刻再通过我们自己设定的 key 来查找对应的关联属性值，不过使用
+                    `ObjcAssociation` 封装的
+                 */
                 ObjectAssociationMap *refs = i->second;
                 ObjectAssociationMap::iterator j = refs->find(key);
+                // 关联属性用 ObjcAssociation 结构体封装
                 if (j != refs->end()) {
                     old_association = j->second;
                     j->second = ObjcAssociation(policy, new_value);
@@ -294,6 +336,7 @@ void _object_set_associative_reference(id object, void *key, id value, uintptr_t
                 ObjectAssociationMap *refs = new ObjectAssociationMap;
                 associations[disguised_object] = refs;
                 (*refs)[key] = ObjcAssociation(policy, new_value);
+                // 知识点是：newisa.has_assoc = true;
                 object->setHasAssociatedObjects();
             }
         } else {

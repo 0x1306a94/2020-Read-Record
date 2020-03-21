@@ -712,7 +712,170 @@ weak_unregister_no_lock(weak_table_t *weak_table, id referent_id,
 
 ### 2. 关联对象的应用？系统如何实现关联对象的
 
+关联对象基本使用方法：
+
+```objective-c
+#import <objc/runtime.h>
+
+static NSString * const kKeyOfImageProperty;
+
+@implementation UIView (Image)
+
+- (UIImage *)pt_image {
+    return objc_getAssociatedObject(self, &kKeyOfImageProperty);
+}
+
+- (void)setPTImage:(UIImage *)image {
+    objc_setAssociatedObject(self, &kKeyOfImageProperty, image,OBJC_ASSOCIATION_RETAIN);
+}
+@end
+```
+
+`objc_AssociationPolicy` 关联对象持有策略有如下几种 ：
+
+| Behavior                            | @property Equivalent                                | Description                                    |
+| ----------------------------------- | --------------------------------------------------- | ---------------------------------------------- |
+| OBJC_ASSOCIATION_ASSIGN             | @property (assign) 或 @property (unsafe_unretained) | 指定一个关联对象的弱引用。                     |
+| OBJC_ASSOCIATION_RETAIN_NONATOMIC   | @property (nonatomic, strong)                       | 指定一个关联对象的强引用，不能被原子化使用。   |
+| OBJC_ASSOCIATION_COPY_NONATOMIC     | @property (nonatomic, copy)                         | 指定一个关联对象的copy引用，不能被原子化使用。 |
+| OBJC_ASSOCIATION_RETAIN             | @property (atomic, strong)                          | 指定一个关联对象的强引用，能被原子化使用。     |
+| OBJC_ASSOCIATION_COPY               | @property (atomic, copy)                            | 指定一个关联对象的copy引用，能被原子化使用。   |
+| OBJC_ASSOCIATION_GETTER_AUTORELEASE |                                                     | 自动释放类型                                   |
+
+> 摘自[瓜地](https://www.desgard.com/iOS-Source-Probe/Objective-C/Runtime/浅谈Associated%20Objects.html)：OBJC_ASSOCIATION_ASSIGN类型的关联对象和`weak`有一定差别，而更加接近于`unsafe_unretained`，即当目标对象遭到摧毁时，属性值不会自动清空。（翻译自[Associated Objects](http://nshipster.com/associated-objects/)）
+>
+> 同样是[Associated Objects](http://nshipster.com/associated-objects/)文中，总结了三个关于Associated Objects用法：
+
+> - **为Class添加私有成员**：例如在AFNetworking中，[在UIImageView里添加了**imageRequestOperation**对象](https://github.com/AFNetworking/AFNetworking/blob/2.1.0/UIKit%2BAFNetworking/UIImageView%2BAFNetworking.m#L57-L63)，从而保证了异步加载图片。
+> - **为Class添加共有成员**：例如在FDTemplateLayoutCell中，使用Associated Objects来缓存每个cell的高度（[代码片段1](https://github.com/mconintet/UITableView-FDTemplateLayoutCell/blob/master/Classes/UITableView+FDIndexPathHeightCache.m#L124)、[代码片段2](https://github.com/mconintet/UITableView-FDTemplateLayoutCell/blob/master/Classes/UITableView+FDKeyedHeightCache.m#L81)）。通过分配不同的key，在复用cell的时候即时取出，增加效率。
+> - **创建KVO对象**：建议使用category来创建关联对象作为观察者。可以参考[*Objective-C Associated Objects*](http://kingscocoa.com/tutorials/associated-objects/)这篇文的例子。
+
+源码实现非常简单，我添加了完整注释，对c++语法也做了一定解释：
+
+```c++
+id _object_get_associative_reference(id object, void *key) {
+    id value = nil;
+    uintptr_t policy = OBJC_ASSOCIATION_ASSIGN;
+    {
+        AssociationsManager manager;
+        // manager.associations() 返回的是一个 `AssociationsHashMap` 对象(*_map)
+        // 所以这里 `&associations` 中用了 `&`
+        AssociationsHashMap &associations(manager.associations());
+        // intptr_t 是为了兼容平台，在64位的机器上，intptr_t和uintptr_t分别是long int、unsigned long int的别名；在32位的机器上，intptr_t和uintptr_t分别是int、unsigned int的别名
+        // DISGUISE 内部对指针做了 ~ 取反操作，“伪装”？
+        disguised_ptr_t disguised_object = DISGUISE(object);
+        /*
+         AssociationsHashMap 继承自 unordered_map，存储 key-value 的组合
+         iterator find ( const key_type& key )，如果 key 存在，则返回key对象的迭代器，
+         如果key不存在，则find返回 unordered_map::end；因此可以通过 `map.find(key) == map.end()`
+         判断 key 是否存在于当前 map 中。
+         */
+        AssociationsHashMap::iterator i = associations.find(disguised_object);
+        if (i != associations.end()) {
+            /*
+                unordered_map 的键值分别是迭代器的first和second属性。
+                所以说上面先通过 object 对象(实例对象or类对象) 找到其所有关联对象
+                i->second 取到又是一个 ObjectAssociationMap
+                此刻再通过我们自己设定的 key 来查找对应的关联属性值，不过使用
+                `ObjcAssociation` 封装的
+             */
+            ObjectAssociationMap *refs = i->second;
+            ObjectAssociationMap::iterator j = refs->find(key);
+            if (j != refs->end()) {
+                ObjcAssociation &entry = j->second;
+                value = entry.value();
+                policy = entry.policy();
+                // 如果策略是 getter retain ，注意这里留个坑
+                // 平常 OBJC_ASSOCIATION_RETAIN = 01401
+                // OBJC_ASSOCIATION_GETTER_RETAIN = (1 << 8)
+                if (policy & OBJC_ASSOCIATION_GETTER_RETAIN) {
+                    // TODO: 有学问
+                    objc_retain(value);
+                }
+            }
+        }
+    }
+    if (value && (policy & OBJC_ASSOCIATION_GETTER_AUTORELEASE)) {
+        objc_autorelease(value);
+    }
+    return value;
+}
+```
+
+对应的set操作实现同样简单，耐心看下源码注释，即使不同c++都没问题：
+
+```c++
+void _object_set_associative_reference(id object, void *key, id value, uintptr_t policy) {
+    // retain the new value (if any) outside the lock.
+    ObjcAssociation old_association(0, nil);
+    // 如果value对象存在，则进行retain or copy 操作
+    id new_value = value ? acquireValue(value, policy) : nil;
+    {
+        AssociationsManager manager;
+        // manager.associations() 返回的是一个 `AssociationsHashMap` 对象(*_map)
+        // 所以这里 `&associations` 中用了 `&`
+        AssociationsHashMap &associations(manager.associations());
+        // intptr_t 是为了兼容平台，在64位的机器上，intptr_t和uintptr_t分别是long int、unsigned long int的别名；在32位的机器上，intptr_t和uintptr_t分别是int、unsigned int的别名
+        // DISGUISE 内部对指针做了 ~ 取反操作，“伪装”
+        disguised_ptr_t disguised_object = DISGUISE(object);
+        if (new_value) {
+            // break any existing association.
+            /*
+             AssociationsHashMap 继承自 unordered_map，存储 key-value 的组合
+             iterator find ( const key_type& key )，如果 key 存在，则返回key对象的迭代器，
+             如果key不存在，则find返回 unordered_map::end；因此可以通过 `map.find(key) == map.end()`
+             判断 key 是否存在于当前 map 中。
+             */
+            AssociationsHashMap::iterator i = associations.find(disguised_object);
+            // 这里和get操作不同，set操作时如果查询到对象没有关联对象，那么这一次设值是第一次，
+            // 所以会创建一个新的 ObjectAssociationMap 用来存储实例对象的所有关联属性
+            if (i != associations.end()) {
+                // secondary table exists
+                /*
+                    unordered_map 的键值分别是迭代器的first和second属性。
+                    所以说上面先通过 object 对象(实例对象or类对象) 找到其所有关联对象
+                    i->second 取到又是一个 ObjectAssociationMap
+                    此刻再通过我们自己设定的 key 来查找对应的关联属性值，不过使用
+                    `ObjcAssociation` 封装的
+                 */
+                ObjectAssociationMap *refs = i->second;
+                ObjectAssociationMap::iterator j = refs->find(key);
+                // 关联属性用 ObjcAssociation 结构体封装
+                if (j != refs->end()) {
+                    old_association = j->second;
+                    j->second = ObjcAssociation(policy, new_value);
+                } else {
+                    (*refs)[key] = ObjcAssociation(policy, new_value);
+                }
+            } else {
+                // create the new association (first time).
+                ObjectAssociationMap *refs = new ObjectAssociationMap;
+                associations[disguised_object] = refs;
+                (*refs)[key] = ObjcAssociation(policy, new_value);
+                // 知识点是：newisa.has_assoc = true;
+                object->setHasAssociatedObjects();
+            }
+        } else {
+            // setting the association to nil breaks the association.
+            AssociationsHashMap::iterator i = associations.find(disguised_object);
+            if (i !=  associations.end()) {
+                ObjectAssociationMap *refs = i->second;
+                ObjectAssociationMap::iterator j = refs->find(key);
+                if (j != refs->end()) {
+                    old_association = j->second;
+                    refs->erase(j);
+                }
+            }
+        }
+    }
+    // release the old value (outside of the lock).
+    if (old_association.hasValue()) ReleaseValue()(old_association);
+}
+```
+
 ### 3. 关联对象的如何进行内存管理的？关联对象如何实现weak属性
+
+使用了 `policy` 设置内存管理策略，具体见上。
 
 ### 4. `Autoreleasepool`的原理？所使用的的数据结构是什么
 
