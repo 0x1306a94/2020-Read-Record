@@ -625,6 +625,379 @@
 
 21. 异步绘制过程中，将生成的image赋值给contents的这种方式，会有什么问题？
 
+    必须要考虑到线程安全问题，因此需要dispatch到主线程才行。
+
+    ```objective-c
+    dispatch_async(dispatch_get_main_queue(), ^{
+      self.contents = (__bridge id)(image.CGImage);
+    });
+    
+    /* An object providing the contents of the layer, typically a CGImageRef,
+     * but may be something else. (For example, NSImage objects are
+     * supported on Mac OS X 10.6 and later.) Default value is nil.
+     * Animatable. */
+    @property(nullable, strong) id contents;
+    ```
+
+    其实可以看看 [YYAsyncLayer]()，几百行代码，但是学习借鉴的意义很大。
+
 22. 子线程 autorelease 对象何时释放
+
+    首先子线程没有创建 autoreleasepool，但是调用了 autorelease 也是不会有内存泄露的，底层实现默认会搞一个 hotpage 来负责这些对象的释放。底层源码：
+
+    ```objective-c
+    -(id) autorelease
+    {
+        return _objc_rootAutorelease(self);
+    }
+    
+    id
+    _objc_rootAutorelease(id obj)
+    {
+        assert(obj);
+        return obj->rootAutorelease();
+    }
+    
+    inline id 
+    objc_object::rootAutorelease()
+    {
+        if (isTaggedPointer()) return (id)this;
+        if (prepareOptimizedReturn(ReturnAtPlus1)) return (id)this;
+    
+        return rootAutorelease2();
+    }
+    
+    __attribute__((noinline,used))
+    id 
+    objc_object::rootAutorelease2()
+    {
+        assert(!isTaggedPointer());
+        return AutoreleasePoolPage::autorelease((id)this);
+    }
+    
+    public:
+        static inline id autorelease(id obj)
+        {
+            assert(obj);
+            assert(!obj->isTaggedPointer());
+            id *dest __unused = autoreleaseFast(obj);
+            assert(!dest  ||  dest == EMPTY_POOL_PLACEHOLDER  ||  *dest == obj);
+            return obj;
+        }
+    
+    static inline id *autoreleaseFast(id obj)
+        {
+            AutoreleasePoolPage *page = hotPage();
+            if (page && !page->full()) {
+                return page->add(obj);
+            } else if (page) {
+                return autoreleaseFullPage(obj, page);
+            } else {
+                return autoreleaseNoPage(obj);
+            }
+        }
+    
+    static __attribute__((noinline))
+        id *autoreleaseNoPage(id obj)
+        {
+            assert(!hotPage());
+    
+            bool pushExtraBoundary = false;
+            if (haveEmptyPoolPlaceholder()) {
+                pushExtraBoundary = true;
+            }
+            else if (obj != POOL_BOUNDARY  &&  DebugMissingPools) {
+                objc_autoreleaseNoPool(obj);
+                return nil;
+            }
+            else if (obj == POOL_BOUNDARY  &&  !DebugPoolAllocation) {
+                return setEmptyPoolPlaceholder();
+            }
+            // 创建了一个 page
+            AutoreleasePoolPage *page = new AutoreleasePoolPage(nil);
+            setHotPage(page);
+            
+            if (pushExtraBoundary) {
+              	// 哨兵对象？？？？？？？？？？？？？
+                page->add(POOL_BOUNDARY);
+            }
+            
+            // Push the requested object or pool.
+            return page->add(obj);
+        }
+    ```
+
+    > 那么时机是什么时候，这里需要分子线程有没有开 runloop 的两种情况。
+
+    如果开的子线程没有起 runloop，那么会在 pthread_exit 退出时进行清理操作，测试代码如下：
+
+    ```objective-c
+    __weak id obj;
+    
+    @interface ViewController ()
+    
+    @end
+    
+    @implementation ViewController
+    
+    - (void)viewDidLoad {
+        [super viewDidLoad];
+        
+        [NSThread detachNewThreadSelector:@selector(createAndConfigObserverInSecondaryThread) toTarget:self withObject:nil];
+    }
+    
+    - (void)createAndConfigObserverInSecondaryThread {
+        __autoreleasing id test = [NSObject new];
+       NSLog(@"obj = %@", test);
+       obj = test; // 这个地方打断点，然后 watchpoint set variable obj
+       [[NSThread currentThread] setName:@"test runloop thread"];
+       NSLog(@"thread ending");
+    }
+    
+    @end
+    ```
+
+    在 `obj = test` 一行打断点，然后 `watchpoint set variable obj`，weak变量值变化会引起断点，此刻看堆栈信息就知道啥时候释放的了。这里的知识点：首先 autoreleasing 修饰的变量不会立即被释放，而是先放入到autoreleasepool 池中，而 `[NSObject new]` 引用计数等于1，我们利用 weak 特性，一旦指向对象被释放，那么 weak 指针会被置为nil，这里会触发一次值变化，所以watchpoint 非常有用。
+
+    ![](./res/autoreleasepool_watchpoint.png)
+
+    看堆栈是先调用如下方法，源码见[pthread_tsd.c](https://opensource.apple.com/source/Libc/Libc-166/pthreads.subproj/pthread_tsd.c.auto.html)，这个同样可以在
+
+    ```c++
+    /*
+     * Clean up thread specific data as thread 'dies'
+     */
+    void
+    _pthread_tsd_cleanup(pthread_t self)
+    {
+    	int i, j;
+    	void *param;
+    	for (j = 0;  j < PTHREAD_DESTRUCTOR_ITERATIONS;  j++)
+    	{
+    		for (i = 0;  i < _POSIX_THREAD_KEYS_MAX;  i++)
+    		{
+    			if (_pthread_keys[i].created && (param = self->tsd[i]))
+    			{
+    				self->tsd[i] = (void *)NULL;
+    				if (_pthread_keys[i].destructor)
+    				{
+    					(_pthread_keys[i].destructor)(param);
+    				}
+    			}
+    		}
+    	}
+    }
+    ```
+
+    然后调用  autoreleasepool 的 `tls_dealloc` 方法
+
+    ```c++
+    #   define EMPTY_POOL_PLACEHOLDER ((id*)1)
+    
+    static void tls_dealloc(void *p) 
+    {
+      if (p == (void*)EMPTY_POOL_PLACEHOLDER) {
+        // No objects or pool pages to clean up here.
+        return;
+      }
+    
+      // reinstate TLS value while we work
+      setHotPage((AutoreleasePoolPage *)p);
+    
+      if (AutoreleasePoolPage *page = coldPage()) {
+        if (!page->empty()) pop(page->begin());  // pop all of the pools
+        if (DebugMissingPools || DebugPoolAllocation) {
+          // pop() killed the pages already
+        } else {
+          page->kill();  // free all of the pages
+        }
+      }
+    
+      // clear TLS value so TLS destruction doesn't loop
+      setHotPage(nil);
+    }
+    ```
+
+    > thread在退出时会释放自身资源，这个操作就包含了销毁autoreleasepool，在tls_delloc中，执行了pop操作。
+
+    如果在子线程中开启了 runloop，网上很多文章都有说，在runloop合适的位置总是会push一个 autoreleasepool，同时在休眠前进行pop操作，形成了一个包裹 `@autoreleasepool{}`;
+
+    如何知道到底是runloop哪个阶段进行pop操作，可以借助上面的方式，打断点来排查，首先测试代码如下：
+
+    ```objective-c
+    
+    static void RunLoopObserverCallBack(CFRunLoopObserverRef observer, CFRunLoopActivity activity, void *info) {
+        NSLog(@"activity:%d",activity);
+    }
+    
+    __weak id obj;
+    
+    @interface ViewController ()
+    
+    @end
+    
+    @implementation ViewController
+    
+    - (void)viewDidLoad {
+        [super viewDidLoad];
+        
+        [NSThread detachNewThreadSelector:@selector(createAndConfigObserverInSecondaryThread2) toTarget:self withObject:nil];
+    }
+    
+    - (void)createAndConfigObserverInSecondaryThread2 {
+        [[NSThread currentThread] setName:@"test runloop thread"];
+        NSRunLoop *loop = [NSRunLoop currentRunLoop];
+        CFRunLoopObserverRef observer;
+        observer = CFRunLoopObserverCreate(CFAllocatorGetDefault(),
+                                           kCFRunLoopAllActivities,
+                                           true,      // repeat
+                                           0xFFFFFF,  // after CATransaction(2000000)
+                                           RunLoopObserverCallBack, NULL);
+        CFRunLoopRef cfrunloop = [loop getCFRunLoop];
+        if (observer) {
+            CFRunLoopAddObserver(cfrunloop, observer, kCFRunLoopCommonModes);
+            CFRelease(observer);
+        }
+        [NSTimer scheduledTimerWithTimeInterval:5 target:self selector:@selector(testAction) userInfo:nil repeats:YES];
+        [loop run];
+        NSLog(@"thread ending");
+    }
+    
+    - (void)testAction{
+        __autoreleasing id test = [NSObject new];
+        obj = test;
+        NSLog(@"obj = %@", obj);
+    }
+    @end
+    ```
+
+    同样在 obj = test 打断点，然后 `watchpointer set variable obj` 进行 watch，最后释放堆栈如下：
+
+    <img src="./res/autoreleasepool_runloop.png" style="zoom:50%;" />
+
+    貌似是从 `__CFRUNLOOP_IS_CALLING_OUT_TO_A_TIMER_CALLBACK_FUNCTION__` 调用了 pop 操作：
+
+    ```c++
+    static void __CFRUNLOOP_IS_CALLING_OUT_TO_A_TIMER_CALLBACK_FUNCTION__(CFRunLoopTimerCallBack func, CFRunLoopTimerRef timer, void *info) {
+        if (func) {
+            func(timer, info);
+        }
+        asm __volatile__(""); // thwart tail-call optimization
+    }
+    ```
+
+    > 貌似得不出结论。TODO 下。
+
+    知识点：创建自己的 source 事件
+
+    ```objective-c
+    - (void)createAndConfigObserverInSecondaryThread{
+        __autoreleasing id test = [NSObject new];
+        NSLog(@"obj = %@", test);
+        obj = test;
+        [[NSThread currentThread] setName:@"test runloop thread"];
+        NSRunLoop *loop = [NSRunLoop currentRunLoop];
+        CFRunLoopObserverRef observer;
+        observer = CFRunLoopObserverCreate(CFAllocatorGetDefault(),
+                                           kCFRunLoopAllActivities,
+                                           true,      // repeat
+                                           0xFFFFFF,  // after CATransaction(2000000)
+                                           RunLoopObserverCallBack, NULL);
+        CFRunLoopRef cfrunloop = [loop getCFRunLoop];
+        if (observer) {
+            
+            CFRunLoopAddObserver(cfrunloop, observer, kCFRunLoopCommonModes);
+            CFRelease(observer);
+        }
+        
+        CFRunLoopSourceRef source;
+        CFRunLoopSourceContext sourceContext = {0, (__bridge void *)(self), NULL, NULL, NULL, NULL, NULL, NULL, NULL, &runLoopSourcePerformRoutine};
+        source = CFRunLoopSourceCreate(NULL, 0, &sourceContext);
+        CFRunLoopAddSource(cfrunloop, source, kCFRunLoopDefaultMode);
+        runLoopSource = source;
+        runLoop = cfrunloop;
+        [loop run];
+        NSLog(@"thread ending");
+    }
+    
+    // 这里是按钮调用这个方法，可以看到是手动 signal 一下
+    -(void)wakeupSource{
+        //通知InputSource
+        CFRunLoopSourceSignal(runLoopSource);
+        //唤醒runLoop
+        CFRunLoopWakeUp(runLoop);
+        
+    }
+    
+    ...
+    
+    void runLoopSourcePerformRoutine (void *info)
+    {
+    	  __autoreleasing id test = [NSObject new];
+        obj = test;
+        // 如果不对obj赋值，obj会一直持有createAndConfigObserverInSecondaryThread函数入口的那个object，那个object不受这里面的autoreleasepool影响。
+        NSLog(@"obj is %@" , obj);
+        NSLog(@"回调方法%@",[NSThread currentThread]);
+    }
+    ```
+
+    按钮首先 signal 了 source 事件，然后 wakeup runloop，这里有个疑惑，其实我们点击屏幕上按钮同样会唤醒 runloop吧。
+
+    此刻会执行到 runLoopSourcePerformRoutine 方法，观察这里的 obj 是在合适释放 `[NSRunloop run:beforeDate:]` 中，关于 [Runloop GUN 实现源码](http://www.gnustep.org/resources/documentation/Developer/Base/Reference/NSRunLoop.html)，可作为参考。
+
+    ```c++
+    - (BOOL) runMode: (NSString*)mode beforeDate: (NSDate*)date
+    {
+      NSAutoreleasePool	*arp = [NSAutoreleasePool new];
+      NSString              *savedMode = _currentMode;
+      GSRunLoopCtxt		*context;
+      NSDate		*d;
+    
+      NSAssert(mode != nil, NSInvalidArgumentException);
+    
+      /* Process any pending notifications.
+       */
+      GSPrivateNotifyASAP(mode);
+    
+      /* And process any performers scheduled in the loop (eg something from
+       * another thread.
+       */
+      _currentMode = mode;
+      context = NSMapGet(_contextMap, mode);
+      [self _checkPerformers: context];
+      _currentMode = savedMode;
+    
+      /* Find out how long we can wait before first limit date.
+       * If there are no input sources or timers, return immediately.
+       */
+      d = [self limitDateForMode: mode];
+      if (nil == d)
+        {
+          [arp drain];
+          return NO;
+        }
+    
+      /* Use the earlier of the two dates we have (nil date is like distant past).
+       */
+      if (nil == date)
+        {
+          [self acceptInputForMode: mode beforeDate: nil];
+        }
+      else
+        {
+          /* Retain the date in case the firing of a timer (or some other event)
+           * releases it.
+           */
+          d = [[d earlierDate: date] copy];
+          [self acceptInputForMode: mode beforeDate: d];
+          RELEASE(d);
+        }
+    
+      [arp drain];
+      return YES;
+    }
+    ```
+
+    结论是runloop很多方法中其实隐式的会创建一些 autoreleasepool，所以大可不必担心。
 
 23. NSProxy 是什么？可以用来干嘛。
